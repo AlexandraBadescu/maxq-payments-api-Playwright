@@ -1,0 +1,25 @@
+{
+  "name": "maxq-payments-playwright",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "playwright test",
+    "test:report": "playwright show-report reports/html",
+    "test:isolation": "node scripts/check-isolation.js",
+    "test:guard": "node scripts/check-guard.js",
+    "test:defects": "node scripts/check-defects.js",
+    "audit": "npm audit --audit-level=high"
+  },
+  "dependencies": {
+    "express": "5.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.6",
+    "typescript": "5.7.3"
+  }
+}
