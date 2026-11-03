@@ -8,7 +8,7 @@ This is the AI-assisted Playwright implementation of the scenarios from my Postm
 - **Bounded polling, not a fixed wait.** `expect(...).toPass({ intervals: [200], timeout: 6000 })` is Playwright's own version of the same idea the Postman collection needed a custom pre-request script for: check repeatedly, give up after a fixed budget, and report what was last seen rather than a generic timeout error. See `waitForPaymentStatus` and `waitForDeliveryStatus` in `tests/helpers.ts`.
 - **Proving a duplicate was actually processed before checking nothing changed.** Scenarios 07 and 08 still wait for the delivery to reach `duplicate` before reading the balance. Without that wait, the balance assertion could pass while the event is still queued.
 - **The environment guard.** The Postman collection checked `baseUrl` in a pre-request script before every request. Here the same check happens once, in `tests/global-setup.ts`, before any test runs at all: if `BASE_URL` is set and its host isn't `localhost` or `127.0.0.1`, the whole run refuses before a single request goes out. `npm run test:guard` proves it the same way the Postman version does — by pointing at an instrumented address and confirming zero requests arrived.
-- **Testing the tests.** `npm run test:defects` starts the service with one deliberate bug at a time (the same 30 bugs, the same `src/defects.js`) and checks that the scenario meant to catch it actually fails. Results in `docs/defect-results.md`.
+- **Testing the tests.** `npm run test:defects` starts the service with one deliberate bug at a time (the same 32 bugs, the same `src/defects.js`) and checks that the scenario meant to catch it actually fails. Each run has to exit with a failure and use a report written by that run, so a stale report from an earlier run can't count as a catch. Results in `docs/defect-results.md`, including the first test that failed.
 
 ### A dependency audit gate
 
@@ -60,11 +60,13 @@ Playwright's `webServer` setting does all of it: it starts the service, waits fo
 
 ### No retries
 
-CI used to retry a failed test once. A retry that passes turns a flaky test into a green run, which is the thing the repeat checks are there to rule out. `retries` is now 0, and `npm run test:repeat` runs the whole suite 10 times in a row, in CI as well.
+CI used to retry a failed test once. A retry that passes turns a flaky test into a green run, which is the thing the repeat checks are there to rule out. `retries` is now 0, and `npm run test:repeat` runs every test 10 times (`--repeat-each=10`) with no retries, in CI as well. That is not the same as ten complete runs one after another: Playwright runs the repeats in parallel across its workers. It still shows whether any test fails once in ten, and the Postman repo's `test:repeat` is the one that runs the whole suite ten times in sequence.
 
 ### Typed helpers, and schema checks
 
-The helpers used to return `any`, so a field renamed in a response would only show up as a confusing `undefined`. They are now typed (`Payment`, `Order`, `Refund`, `Delivery`), and every payment, order, refund and error response is also checked against a JSON Schema with Ajv, with the same rules as the Postman collection, including the rule that rejects fields that aren't listed. `getPayment` checks the schema every time, so every poll in every scenario checks the shape for free.
+The helpers used to return `any`, so a field renamed in a response would only show up as a confusing `undefined`. They are now typed (`Payment`, `Order`, `Refund`, `Delivery`), and the payment, order, refund, error, history and simulator delivery responses that the helpers read are also checked against a JSON Schema with Ajv, including the rule that rejects fields that aren't listed. A second review pointed out that my first schemas were looser than the README said: payment status was any string, order items were any array, and history and delivery responses weren't checked. The schemas now list the real statuses, history entry types and delivery reasons, and check each order item. `getPayment` checks the schema every time, so every poll in every scenario checks the shape for free.
+
+The setup helper also checks that a new payment belongs to the order that was paid for, with the right amount and currency. A payment can be `authorised` and still be attached to the wrong order.
 
 Playwright removes types without checking them, so a type error doesn't fail `npm test`. `npm run typecheck` runs `tsc --noEmit` in CI.
 

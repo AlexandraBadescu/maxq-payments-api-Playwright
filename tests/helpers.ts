@@ -24,10 +24,20 @@ export interface Refund {
   status: 'pending' | 'succeeded' | 'failed';
 }
 
+export type PaymentStatus =
+  | 'authorised'
+  | 'declined'
+  | 'capture_pending'
+  | 'captured'
+  | 'capture_failed'
+  | 'capture_timed_out'
+  | 'partially_refunded'
+  | 'refunded';
+
 export interface Payment {
   id: string;
   orderId: string;
-  status: string;
+  status: PaymentStatus;
   currency: Currency;
   amountMinor: number;
   capturedMinor: number;
@@ -134,6 +144,11 @@ export async function setUpAuthorisedPayment(
   expect(res.status(), 'payment authorisation').toBe(201);
   const payment = (await res.json()) as Payment;
   expectSchema('payment', payment);
+  // A payment in the right state can still belong to the wrong order or currency.
+  expect(payment.status, 'new payment status').toBe('authorised');
+  expect(payment.orderId, 'payment is linked to the order that was paid for').toBe(order.id);
+  expect(payment.amountMinor, 'payment amount matches the order total').toBe(order.totalMinor);
+  expect(payment.currency, 'payment currency matches the order').toBe(currency);
   return { customer, order, payment };
 }
 
@@ -202,7 +217,9 @@ export async function getHistory(
 ): Promise<{ paymentId: string; entries: HistoryEntry[] }> {
   const res = await request.get(`/payments/${paymentId}/history`, { headers: authHeader });
   expect(res.status(), 'reading the history').toBe(200);
-  return res.json();
+  const history = await res.json();
+  expectSchema('history', history);
+  return history;
 }
 
 // How many times a type of money movement appears in the history. The rules promise
@@ -227,13 +244,16 @@ export async function sendEvent(request: APIRequestContext, event: EventInput) {
   const res = await request.post('/simulator/payment-events', { data: { ...event, eventId } });
   expect(res.status(), 'the simulator accepting the event').toBe(202);
   const delivery = (await res.json()) as Delivery;
+  expectSchema('delivery', delivery);
   return { ...delivery, eventId };
 }
 
 export async function getDelivery(request: APIRequestContext, deliveryId: string): Promise<Delivery> {
   const res = await request.get(`/simulator/deliveries/${deliveryId}`);
   expect(res.status(), 'reading the delivery').toBe(200);
-  return res.json();
+  const delivery = await res.json();
+  expectSchema('delivery', delivery);
+  return delivery;
 }
 
 // Poll for up to 6 seconds rather than relying on a fixed wait.
