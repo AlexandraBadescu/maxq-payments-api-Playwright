@@ -1,18 +1,63 @@
-import { expect, type APIRequestContext } from '@playwright/test';
+import { randomUUID } from 'node:crypto';
+import { expect, type APIRequestContext, type APIResponse } from '@playwright/test';
 import { EXPECTED_CATALOGUE, ORDER_ITEMS, type Currency } from './constants';
+import { expectSchema } from './schemas';
 
 type Headers = Record<string, string>;
 
-let counter = 0;
+// A random ID, not a timestamp plus a counter: parallel workers can start in the
+// same millisecond, and a clash would fail a test for no reason.
 function uniqueEmail(prefix: string): string {
-  counter += 1;
-  return `${prefix}-${Date.now()}-${counter}@example.test`;
+  return `${prefix}-${randomUUID()}@example.test`;
 }
 
 export interface Customer {
   email: string;
+  password: string;
   token: string;
   authHeader: Headers;
+}
+
+export interface Refund {
+  id: string;
+  amountMinor: number;
+  status: 'pending' | 'succeeded' | 'failed';
+}
+
+export interface Payment {
+  id: string;
+  orderId: string;
+  status: string;
+  currency: Currency;
+  amountMinor: number;
+  capturedMinor: number;
+  refundedMinor: number;
+  pendingRefundMinor: number;
+  refundableMinor: number;
+  refunds: Refund[];
+}
+
+export interface Order {
+  id: string;
+  items: Array<{ sku: string; quantity: number }>;
+  currency: Currency;
+  totalMinor: number;
+}
+
+export interface HistoryEntry {
+  type: string;
+  fromStatus: string | null;
+  toStatus: string;
+  amountMinor?: number;
+  refundId?: string;
+  eventId?: string;
+}
+
+export interface Delivery {
+  deliveryId: string;
+  eventId: string;
+  status: 'queued' | 'applied' | 'duplicate' | 'rejected';
+  reason?: string;
 }
 
 // New customer per scenario to avoid shared test data.
@@ -32,7 +77,7 @@ export async function registerAndLogIn(
   expect(session.status(), 'login').toBe(201);
   const { token } = (await session.json()) as { token: string };
 
-  return { email, token, authHeader: { Authorization: `Bearer ${token}` } };
+  return { email, password, token, authHeader: { Authorization: `Bearer ${token}` } };
 }
 
 // Expected totals come from test data, not the service's price catalogue.
@@ -43,14 +88,30 @@ export function expectedTotalMinor(currency: Currency, items = ORDER_ITEMS): num
   );
 }
 
+// Checks the status, the error code and the shape of an error response in one go.
+// Returns the parsed body so a test can look at the message too.
+export async function expectError(res: APIResponse, status: number, code: string) {
+  expect(res.status(), `expected a ${status} ${code} response`).toBe(status);
+  const body = await res.json();
+  expectSchema('error', body);
+  expect(body.error.code).toBe(code);
+  return body as { error: { code: string; message: string } };
+}
+
 export async function createOrder(
   request: APIRequestContext,
   authHeader: Headers,
-  { items = ORDER_ITEMS, currency = 'GBP' as Currency } = {},
-) {
+  { items = ORDER_ITEMS as unknown as Order['items'], currency = 'GBP' as Currency } = {},
+): Promise<Order> {
   const res = await request.post('/orders', { headers: authHeader, data: { items, currency } });
   expect(res.status(), 'order creation').toBe(201);
-  return res.json();
+  const order = await res.json();
+  expectSchema('order', order);
+  return order;
+}
+
+export async function postOrder(request: APIRequestContext, authHeader: Headers, data: unknown) {
+  return request.post('/orders', { headers: authHeader, data });
 }
 
 export async function authorisePayment(
@@ -65,14 +126,29 @@ export async function authorisePayment(
 // Common setup for payment scenarios.
 export async function setUpAuthorisedPayment(
   request: APIRequestContext,
-  { currency = 'GBP' as Currency, items = ORDER_ITEMS } = {},
+  { currency = 'GBP' as Currency, items = ORDER_ITEMS as unknown as Order['items'] } = {},
 ) {
   const customer = await registerAndLogIn(request);
   const order = await createOrder(request, customer.authHeader, { items, currency });
   const res = await authorisePayment(request, customer.authHeader, order.id, 'pm_success');
   expect(res.status(), 'payment authorisation').toBe(201);
-  const payment = await res.json();
+  const payment = (await res.json()) as Payment;
+  expectSchema('payment', payment);
   return { customer, order, payment };
+}
+
+// Setup for scenarios that start from a captured payment.
+export async function setUpCapturedPayment(
+  request: APIRequestContext,
+  { currency = 'GBP' as Currency } = {},
+) {
+  const setup = await setUpAuthorisedPayment(request, { currency });
+  const capture = await requestCapture(request, setup.customer.authHeader, setup.payment.id);
+  expect(capture.status(), 'capture request').toBe(202);
+  const event = await sendEvent(request, { type: 'capture.succeeded', paymentId: setup.payment.id });
+  await waitForDeliveryStatus(request, event.deliveryId, 'applied');
+  const captured = await waitForPaymentStatus(request, setup.customer.authHeader, setup.payment.id, 'captured');
+  return { ...setup, captured };
 }
 
 export async function requestCapture(
@@ -92,16 +168,48 @@ export async function requestRefund(
   return request.post(`/payments/${paymentId}/refunds`, { headers: authHeader, data: { amountMinor } });
 }
 
-export async function getPayment(request: APIRequestContext, authHeader: Headers, paymentId: string) {
-  const res = await request.get(`/payments/${paymentId}`, { headers: authHeader });
-  expect(res.status(), 'reading the payment').toBe(200);
-  return res.json();
+// Asks for a refund that should be accepted, and returns it.
+export async function requestAcceptedRefund(
+  request: APIRequestContext,
+  authHeader: Headers,
+  paymentId: string,
+  amountMinor: number,
+): Promise<Refund> {
+  const res = await requestRefund(request, authHeader, paymentId, amountMinor);
+  expect(res.status(), 'refund request').toBe(202);
+  const refund = (await res.json()) as Refund;
+  expectSchema('refund', refund);
+  expect(refund.status).toBe('pending');
+  return refund;
 }
 
-export async function getHistory(request: APIRequestContext, authHeader: Headers, paymentId: string) {
+export async function getPayment(
+  request: APIRequestContext,
+  authHeader: Headers,
+  paymentId: string,
+): Promise<Payment> {
+  const res = await request.get(`/payments/${paymentId}`, { headers: authHeader });
+  expect(res.status(), 'reading the payment').toBe(200);
+  const payment = await res.json();
+  expectSchema('payment', payment);
+  return payment;
+}
+
+export async function getHistory(
+  request: APIRequestContext,
+  authHeader: Headers,
+  paymentId: string,
+): Promise<{ paymentId: string; entries: HistoryEntry[] }> {
   const res = await request.get(`/payments/${paymentId}/history`, { headers: authHeader });
   expect(res.status(), 'reading the history').toBe(200);
   return res.json();
+}
+
+// How many times a type of money movement appears in the history. The rules promise
+// each settled capture or refund appears exactly once; they don't promise a total
+// number of entries, so tests count one type at a time.
+export function countEntries(history: { entries: HistoryEntry[] }, type: string): number {
+  return history.entries.filter((entry) => entry.type === type).length;
 }
 
 interface EventInput {
@@ -115,14 +223,14 @@ interface EventInput {
 // Reuse the event ID when testing duplicate notifications.
 // Scenarios 07 and 08 check that the balance isn't affected twice.
 export async function sendEvent(request: APIRequestContext, event: EventInput) {
-  const eventId = event.eventId ?? `evt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const eventId = event.eventId ?? `evt-${randomUUID()}`;
   const res = await request.post('/simulator/payment-events', { data: { ...event, eventId } });
   expect(res.status(), 'the simulator accepting the event').toBe(202);
-  const delivery = (await res.json()) as { deliveryId: string; eventId: string; status: string };
+  const delivery = (await res.json()) as Delivery;
   return { ...delivery, eventId };
 }
 
-export async function getDelivery(request: APIRequestContext, deliveryId: string) {
+export async function getDelivery(request: APIRequestContext, deliveryId: string): Promise<Delivery> {
   const res = await request.get(`/simulator/deliveries/${deliveryId}`);
   expect(res.status(), 'reading the delivery').toBe(200);
   return res.json();
@@ -167,7 +275,7 @@ export async function waitForDeliveryStatus(
   const wanted = Array.isArray(expected) ? expected : [expected];
   return pollUntil(
     () => getDelivery(request, deliveryId),
-    (delivery: any) => wanted.includes(delivery.status),
-    (last: any) => `delivery ${deliveryId} did not reach "${wanted.join('" or "')}"; last seen: "${last?.status}"`,
+    (delivery) => wanted.includes(delivery.status),
+    (last) => `delivery ${deliveryId} did not reach "${wanted.join('" or "')}"; last seen: "${last?.status}"`,
   );
 }

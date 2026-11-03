@@ -7,10 +7,16 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the run that is still going.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -24,6 +30,7 @@ jobs:
   suite:
     name: Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +38,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Playwright strips types without checking them, so check them separately.
+      - run: npm run typecheck
       # API tests use request; no browser download required.
       - run: npm test
       - uses: actions/upload-artifact@v4
@@ -42,6 +51,7 @@ jobs:
   checks-on-the-tests:
     name: Checks on the tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,4 +61,8 @@ jobs:
       - run: npm ci
       - run: npm run test:isolation
       - run: npm run test:guard
+      - run: npm run test:repeat
       - run: npm run test:defects
+      # The results page is generated, so it must match what the committed tests produce.
+      # If this fails, run `npm run test:defects` and commit docs/defect-results.md.
+      - run: git diff --exit-code docs/defect-results.md

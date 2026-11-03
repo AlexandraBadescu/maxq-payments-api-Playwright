@@ -1,28 +1,24 @@
 import { test, expect } from '@playwright/test';
 import {
-  setUpAuthorisedPayment,
-  requestCapture,
+  setUpCapturedPayment,
   sendEvent,
-  waitForPaymentStatus,
   waitForDeliveryStatus,
+  requestAcceptedRefund,
   requestRefund,
+  getPayment,
 } from '../helpers';
 
 test('06 a failed refund releases the reserved balance', async ({ request }) => {
-  const { customer, payment } = await setUpAuthorisedPayment(request, { currency: 'GBP' });
-
-  await requestCapture(request, customer.authHeader, payment.id);
-  const captureEvent = await sendEvent(request, { type: 'capture.succeeded', paymentId: payment.id });
-  await waitForDeliveryStatus(request, captureEvent.deliveryId, 'applied');
-  const captured = await waitForPaymentStatus(request, customer.authHeader, payment.id, 'captured');
+  const { customer, payment, captured } = await setUpCapturedPayment(request);
 
   const amount = 500;
-  const refund = await (await requestRefund(request, customer.authHeader, payment.id, amount)).json();
+  const refund = await requestAcceptedRefund(request, customer.authHeader, payment.id, amount);
 
-  // The reservation happens immediately, before any notification — a
-  // second refund in progress at the same time can't add up to more than
-  // was captured.
-  const reserved = await waitForPaymentStatus(request, customer.authHeader, payment.id, 'captured');
+  // The reservation happens immediately, before any notification, so a second
+  // refund in progress at the same time can't add up to more than was captured.
+  // This is a single read, not a poll: it has to be true straight away.
+  const reserved = await getPayment(request, customer.authHeader, payment.id);
+  expect(reserved.status).toBe('captured');
   expect(reserved.refundableMinor).toBe(captured.capturedMinor - amount);
 
   const failedEvent = await sendEvent(request, {
@@ -32,8 +28,10 @@ test('06 a failed refund releases the reserved balance', async ({ request }) => 
   });
   await waitForDeliveryStatus(request, failedEvent.deliveryId, 'applied');
 
-  const released = await waitForPaymentStatus(request, customer.authHeader, payment.id, 'captured');
+  const released = await getPayment(request, customer.authHeader, payment.id);
+  expect(released.status).toBe('captured');
   expect(released.refundableMinor).toBe(captured.capturedMinor);
+  expect(released.pendingRefundMinor).toBe(0);
   expect(released.refundedMinor).toBe(0);
 
   // The balance really was released, not just reported as released: the

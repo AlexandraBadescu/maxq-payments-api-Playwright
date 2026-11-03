@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
-import { CURRENCIES } from '../constants';
+import { CURRENCIES, PARTIAL_REFUND_MINOR } from '../constants';
 import {
   setUpAuthorisedPayment,
   requestCapture,
   sendEvent,
   waitForPaymentStatus,
   waitForDeliveryStatus,
-  requestRefund,
+  requestAcceptedRefund,
+  getPayment,
   getHistory,
   expectedTotalMinor,
 } from '../helpers';
@@ -31,10 +32,15 @@ for (const currency of CURRENCIES) {
     expect(captured.refundedMinor).toBe(0);
     expect(captured.refundableMinor).toBe(total);
 
-    const partialAmount = 500;
-    const refundRes = await requestRefund(request, customer.authHeader, payment.id, partialAmount);
-    expect(refundRes.status()).toBe(202);
-    const refund = await refundRes.json();
+    const partialAmount = PARTIAL_REFUND_MINOR;
+    const refund = await requestAcceptedRefund(request, customer.authHeader, payment.id, partialAmount);
+
+    // The refund is reserved straight away, but nothing has settled yet.
+    const reserved = await getPayment(request, customer.authHeader, payment.id);
+    expect(reserved.status).toBe('captured');
+    expect(reserved.pendingRefundMinor).toBe(partialAmount);
+    expect(reserved.refundedMinor).toBe(0);
+    expect(reserved.refundableMinor).toBe(total - partialAmount);
 
     const refundEvent = await sendEvent(request, {
       type: 'refund.succeeded',
@@ -50,14 +56,15 @@ for (const currency of CURRENCIES) {
       'partially_refunded',
     );
     expect(partiallyRefunded.refundedMinor).toBe(partialAmount);
+    expect(partiallyRefunded.pendingRefundMinor).toBe(0);
     expect(partiallyRefunded.refundableMinor).toBe(total - partialAmount);
 
     // Guards against a capture or refund that reports the wrong amount: a
     // payment can say "captured" and still hold the wrong figure.
     const history = await getHistory(request, customer.authHeader, payment.id);
-    const captureEntry = history.entries.find((e: any) => e.type === 'capture_settled');
-    const refundEntry = history.entries.find((e: any) => e.type === 'refund_settled');
-    expect(captureEntry.amountMinor).toBe(total);
-    expect(refundEntry.amountMinor).toBe(partialAmount);
+    const captureEntry = history.entries.find((e) => e.type === 'capture_settled');
+    const refundEntry = history.entries.find((e) => e.type === 'refund_settled');
+    expect(captureEntry?.amountMinor).toBe(total);
+    expect(refundEntry?.amountMinor).toBe(partialAmount);
   });
 }

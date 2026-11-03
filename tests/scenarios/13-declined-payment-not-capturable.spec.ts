@@ -1,5 +1,13 @@
 import { test, expect } from '@playwright/test';
-import { registerAndLogIn, createOrder, authorisePayment, requestCapture } from '../helpers';
+import {
+  registerAndLogIn,
+  createOrder,
+  authorisePayment,
+  requestCapture,
+  getPayment,
+  expectError,
+  type Payment,
+} from '../helpers';
 
 test('13 a declined payment cannot be captured', async ({ request }) => {
   const customer = await registerAndLogIn(request);
@@ -7,11 +15,14 @@ test('13 a declined payment cannot be captured', async ({ request }) => {
 
   const authRes = await authorisePayment(request, customer.authHeader, order.id, 'pm_declined');
   expect(authRes.status()).toBe(201);
-  const payment = await authRes.json();
+  const payment = (await authRes.json()) as Payment;
   expect(payment.status).toBe('declined');
 
-  const captureRes = await requestCapture(request, customer.authHeader, payment.id);
-  expect(captureRes.status()).toBe(409);
-  const body = await captureRes.json();
-  expect(body.error.code).toBe('invalid_state');
+  await expectError(await requestCapture(request, customer.authHeader, payment.id), 409, 'invalid_state');
+
+  // No money moved.
+  const after = await getPayment(request, customer.authHeader, payment.id);
+  expect(after.status).toBe('declined');
+  expect(after.capturedMinor).toBe(0);
+  expect(after.refundableMinor).toBe(0);
 });
