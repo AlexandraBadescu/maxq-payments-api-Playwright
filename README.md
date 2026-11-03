@@ -12,9 +12,9 @@ I started with my [Postman/Newman project](https://github.com/AlexandraBadescu/m
 |---|---|
 | Scenarios | 24, each able to run alone (67 tests, about 15 seconds) |
 | Currencies | Scenario 01 runs in both GBP and EUR from the same test (see [below](#one-difference-from-the-postman-version)); the other 23 run in GBP |
-| Response shapes | Every payment, order, refund and error response is checked against a JSON Schema that rejects unexpected fields |
-| Deliberate bugs | 30 out of 30 caught by the intended scenario ([results](docs/defect-results.md)) |
-| Repeat runs | `npm run test:repeat` runs the suite 10 times in a row, with no retries; it also runs in CI |
+| Response shapes | Payment, order, refund, error, history and simulator delivery responses read through the helpers are checked against a JSON Schema that lists the real statuses and rejects unexpected fields |
+| Deliberate bugs | 32 out of 32 caught by the intended scenario ([results](docs/defect-results.md)) |
+| Repeat runs | `npm run test:repeat` runs every test 10 times (`--repeat-each=10`, in parallel, no retries); it also runs in CI |
 | Safety guard | Pointed at another host, 0 requests were sent there |
 | Dependency audit | `npm audit --audit-level=high` runs in CI on every push, dev dependencies included |
 | Type checking | `npm run typecheck` runs in CI. Playwright strips types without checking them, so it needs its own step |
@@ -24,12 +24,12 @@ I started with my [Postman/Newman project](https://github.com/AlexandraBadescu/m
 
 The question this project was built to answer is whether an AI-assisted port still tests the risks I started with. The answer was "not at first". When both suites were run against the same bugs, the Playwright version caught fewer, and the reason was visible in its own results table: the bug "a capture is marked as captured before the provider confirms it" failed 13 Postman scenarios but only 10 Playwright ones.
 
-An outside review then seeded 10 extra bugs. The first version of this suite caught 1 of them, and the Postman suite caught 3. All 30 bugs are now in both suites and all are caught.
+An outside review then seeded 10 extra bugs. The first version of this suite caught 1 of them, and the Postman suite caught 3. All 30 bugs were then in both suites and all were caught. A second review added two more (a payment created with the wrong currency or linked to the wrong order), and the setup now checks both.
 
 | | Postman | Playwright |
 |---|---|---|
 | Scenarios | 24 folders, 345 checks | 24 spec files, 67 tests |
-| Bugs caught | 30 of 30 | 30 of 30 |
+| Bugs caught | 32 of 32 | 32 of 32 |
 | Response shape checks | JSON Schema on every payment and error response | The same rules, with Ajv, on payment, order, refund and error responses |
 | Checks that a refused request changed nothing | Yes | Yes (added after review) |
 | Currencies | Whole suite in GBP and EUR, from environment files | Scenario 01 only |
@@ -61,7 +61,7 @@ npm test                 # 24 scenarios; scenario 01 runs in GBP and EUR
 npm run typecheck        # checks the TypeScript, which npm test doesn't
 npm run test:isolation   # each scenario file on its own
 npm run test:guard       # proves the safety guard works
-npm run test:repeat      # 10 runs in a row, no retries
+npm run test:repeat      # every test 10 times, no retries
 npm run test:defects     # runs the suite against each deliberate bug
 npm run test:report      # opens the HTML report from the last run
 ```
@@ -95,7 +95,7 @@ It's deliberate, not an oversight or an accident of copy-paste. This project is 
 ## Limits
 
 - **This is a simulation.** It tests a demo service that I control, and it doesn't show compatibility with any real payment provider.
-- **The bugs are ones I chose, mostly.** Catching all 30 shows the suite detects those failures, not every possible bug. The first 14 were written alongside the first version of the tests. The other 16 were added after an outside review that seeded bugs of its own, so they are a fairer test.
+- **The bugs are ones I chose, mostly.** Catching all 32 shows the suite detects those failures, not every possible bug. The first 14 were written alongside the first version of the tests. The next 16 were added after an outside review that seeded bugs of its own, so they are a fairer test, and the last two came from a second review.
 - **Only one scenario runs in both currencies.** I'd parameterise the others before describing the whole suite as multi-currency.
 - **Scale isn't tested.** The service is in-memory and has no performance, load or concurrency testing.
 - **The security checks are narrow.** They cover authentication, access to other customers' payments and orders, and input validation. This isn't a security review.
