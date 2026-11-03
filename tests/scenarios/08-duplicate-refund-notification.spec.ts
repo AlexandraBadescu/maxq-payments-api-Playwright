@@ -1,23 +1,19 @@
 import { test, expect } from '@playwright/test';
 import {
-  setUpAuthorisedPayment,
-  requestCapture,
+  setUpCapturedPayment,
   sendEvent,
   waitForPaymentStatus,
   waitForDeliveryStatus,
-  requestRefund,
+  requestAcceptedRefund,
+  getHistory,
+  countEntries,
 } from '../helpers';
 
 test('08 a duplicate refund notification has no second effect', async ({ request }) => {
-  const { customer, payment } = await setUpAuthorisedPayment(request, { currency: 'GBP' });
-
-  await requestCapture(request, customer.authHeader, payment.id);
-  const captureEvent = await sendEvent(request, { type: 'capture.succeeded', paymentId: payment.id });
-  await waitForDeliveryStatus(request, captureEvent.deliveryId, 'applied');
-  await waitForPaymentStatus(request, customer.authHeader, payment.id, 'captured');
+  const { customer, payment } = await setUpCapturedPayment(request);
 
   const amount = 500;
-  const refund = await (await requestRefund(request, customer.authHeader, payment.id, amount)).json();
+  const refund = await requestAcceptedRefund(request, customer.authHeader, payment.id, amount);
 
   const first = await sendEvent(request, {
     type: 'refund.succeeded',
@@ -34,9 +30,13 @@ test('08 a duplicate refund notification has no second effect', async ({ request
     refundId: refund.id,
     eventId: first.eventId,
   });
-  await waitForDeliveryStatus(request, repeat.deliveryId, 'duplicate');
+  const outcome = await waitForDeliveryStatus(request, repeat.deliveryId, 'duplicate');
+  expect(outcome.reason).toBe('event_already_processed');
 
   const after = await waitForPaymentStatus(request, customer.authHeader, payment.id, 'partially_refunded');
   expect(after.refundedMinor).toBe(amount);
   expect(after.refundableMinor).toBe(afterFirst.refundableMinor);
+
+  // The refund settled once, and the history says so once.
+  expect(countEntries(await getHistory(request, customer.authHeader, payment.id), 'refund_settled')).toBe(1);
 });

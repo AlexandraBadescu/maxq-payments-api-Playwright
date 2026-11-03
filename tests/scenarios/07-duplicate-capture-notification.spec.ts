@@ -5,6 +5,8 @@ import {
   sendEvent,
   waitForPaymentStatus,
   waitForDeliveryStatus,
+  getHistory,
+  countEntries,
 } from '../helpers';
 
 test('07 a duplicate capture notification has no second effect', async ({ request }) => {
@@ -25,8 +27,12 @@ test('07 a duplicate capture notification has no second effect', async ({ reques
 
   // Wait for the duplicate to be processed before checking the balance.
   // Otherwise the test could pass while the event is still queued.
-  await waitForDeliveryStatus(request, repeat.deliveryId, 'duplicate');
+  const outcome = await waitForDeliveryStatus(request, repeat.deliveryId, 'duplicate');
+  expect(outcome.reason).toBe('event_already_processed');
 
   const after = await waitForPaymentStatus(request, customer.authHeader, payment.id, 'captured');
   expect(after.capturedMinor).toBe(captured.capturedMinor);
+
+  // The money moved once, and the history says so once.
+  expect(countEntries(await getHistory(request, customer.authHeader, payment.id), 'capture_settled')).toBe(1);
 });
